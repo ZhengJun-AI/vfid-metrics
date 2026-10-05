@@ -98,48 +98,73 @@ class ImageSequenceDataset(Dataset):
 
 class VideoDataset(Dataset):
     def __init__(self, video_path, sequence_length=16, resize_shape=(224, 224), no_overlap=True):
-        self.video_paths = glob.glob(video_path)
+    
+        self.video_paths = sorted( glob.glob(video_path))
         self.sequence_length = sequence_length
         self.no_overlap = no_overlap
         self.transforms = SequeceTransform(T.Compose([T.ToTensor(), T.Resize(resize_shape)]))
 
         total_frames = 0
+        total_sequences = 0
         self.num_accum_sequences = []
         for video_path in self.video_paths:
             cap = cv2.VideoCapture(video_path)
             num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-            total_frames += num_frames
-            self.num_accum_sequences.append(
-                (total_frames // sequence_length)
-                if no_overlap
-                else (total_frames - sequence_length + 1)
-            )
             cap.release()
+            total_frames += num_frames
+            if no_overlap:
+                num_sequences = num_frames // sequence_length
+            else:
+                num_sequences = max(num_frames - sequence_length + 1, 0)
+
+            total_sequences += num_sequences
+            self.num_accum_sequences.append(total_sequences)
         print(f'Loaded {len(self.video_paths)} video files, {total_frames} frames total')
 
     def __len__(self):
         return self.num_accum_sequences[-1]
 
+
     def __getitem__(self, idx):
-        video_idx = bisect.bisect_left(self.num_accum_sequences, idx)
+        video_idx = bisect.bisect_right(
+            self.num_accum_sequences,
+            idx
+        )
+
         video_path = self.video_paths[video_idx]
-        frame_idx = idx - self.num_accum_sequences[video_idx]
+
+        prev_sequences = (
+            0
+            if video_idx == 0
+            else self.num_accum_sequences[video_idx - 1]
+        )
+
+        local_idx = idx - prev_sequences
+
         if self.no_overlap:
-            frame_idx *= self.sequence_length
+            frame_idx = local_idx * self.sequence_length
+        else:
+            frame_idx = local_idx
 
         cap = cv2.VideoCapture(video_path)
+        cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+
         frames = []
+
         for _ in range(self.sequence_length):
             ret, frame = cap.read()
             assert ret
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
             frames.append(frame)
+
         cap.release()
 
         frames = self.transforms(frames)
-        return frames
 
+        return frames
 
 def is_image_dir_path(path, ext='png'):
     return len(glob.glob(path + (f'/*.{ext}' if ext else '/*'))) > 0
